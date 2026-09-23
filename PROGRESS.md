@@ -86,6 +86,26 @@ Essentially comparable — CNN slightly ahead on accuracy/AUC, XGBoost slightly 
 - Hardware loop (Arduino + serial protocol) — the remaining piece of Deliverable 1.
 - `models/classifier_cnn.pt` (116K) and `models/classifier_baseline.json` (324K) both committed — small, per project rule.
 
+## 2026-09-23 — GRU and LSTM added, full 4-model comparison
+
+**Refactor:** extracted the CV/train/eval loop shared by CNN/GRU/LSTM into `src/models/sequence_training.py:run_cv()` — a model constructor + name is all each of `classifier_cnn.py`, `classifier_gru.py`, `classifier_lstm.py` now provide. Re-ran CNN after the refactor as a regression check; results shifted slightly (86.5%->87.4% acc) purely from unseeded model-training randomness (weight init/batch shuffling) — the CV split itself is seeded and identical, so this is expected run-to-run variance, not a refactor bug.
+
+**Full comparison (subject-grouped 5-fold CV, mean across folds):**
+| Model | Accuracy | F1 | ROC-AUC | CV std (acc) |
+|---|---|---|---|---|
+| XGBoost (window stats) | 0.862 | 0.852 | 0.917 | 0.036 |
+| 1D-CNN (raw sequences) | 0.874 | 0.856 | 0.927 | 0.025 |
+| **GRU (raw sequences)** | **0.889** | **0.883** | **0.937** | **0.019** |
+| LSTM (raw sequences) | 0.863 | 0.848 | 0.917 | 0.050 |
+
+**GRU is the best model on every metric** and the most consistent across folds (lowest std). LSTM had one unstable fold (fold 1: acc 0.790, auc 0.848, notably below its other folds) - same architecture pattern as GRU (single recurrent layer, hidden_size=64) but LSTM's extra gate/cell-state seems more sensitive to this particular split or init; not investigated further, noted as an observation.
+
+**User idea considered and declined:** per-subject model routing (use whichever of the 4 models scores best for each specific subject, use that one for them). Explained why this doesn't work: choosing per-subject winners requires seeing each subject's held-out test accuracy, i.e. using test-set labels to pick the model - that's leakage, and the resulting "ensemble" accuracy wouldn't be a valid generalization estimate. It's also undeployable: a real new driver has no ground truth to know in advance which model suits them. Proposed a legitimate alternative instead - a standard prediction-averaging/stacking ensemble across all 4 models (no subject-specific routing, no leakage) - pending user decision on whether to build it.
+
+**Open issues / next steps:**
+- Ensemble (avg/stack all 4 models' probabilities) - proposed, not yet built, awaiting go-ahead.
+- Hardware loop still outstanding.
+
 ## 2026-09-23 — Investigated low-accuracy subjects (out-of-fold analysis)
 
 Computed out-of-fold predictions across all 5 CV folds to get true per-subject
