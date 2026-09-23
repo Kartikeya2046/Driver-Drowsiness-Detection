@@ -228,3 +228,11 @@ Video-level acc: GRU 0.825 / 0.859 / 0.845; best overall is the stacked ensemble
 - Phase 3 (predictive layer) is next.
 - Calibration-length curve figure → Phase 5 report figures (data in `results/phase2b_summary.csv`).
 - KSS self-recordings not started; hardware still deferred and not ordered.
+
+## 2026-09-23 — Session paused: checkpoint saved
+
+- Added `CHECKPOINT.md`: current state, every decision made this session with its rationale and who made it, ordered Phase 3 next steps, user-side tasks (KSS recordings, hardware order), open decisions (60 s vs 30 s calibration), resume commands, local-only artifacts and how to regenerate them, and gotchas learned.
+- `context.md` now points to `CHECKPOINT.md` as the second file to read, to be updated at the end of every session.
+- Cross-session preferences (GPU-first training, honest evaluation, progress visibility) saved to Claude's memory outside the repo.
+
+**Next session starts at:** `CHECKPOINT.md` §3, step 1 (forecaster dataset), optionally preceded by a KSS recording script so self-recordings can begin.

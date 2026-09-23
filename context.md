@@ -1,6 +1,6 @@
 # Agent Context: Predictive Driver Drowsiness CPS
 
-Read this before doing any work in this repo. Full phase-by-phase plan is in `plan.md`.
+Read this before doing any work in this repo. Full phase-by-phase plan is in `plan.md`. **Where the last session stopped, the decisions behind it, and the exact next steps: `CHECKPOINT.md`. Read it second, and update it at the end of every session.**
 
 ## What we are building
 
