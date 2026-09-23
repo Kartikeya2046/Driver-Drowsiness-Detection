@@ -50,6 +50,14 @@ This is a two-person university course project for **ICPS (Intro to Cyber-Physic
 - Arduino C++ (`hardware/*.ino`).
 - Pinned `requirements.txt`.
 
+## Two environments — which to use when
+
+- **`.venv/` (project root, Python 3.13, CPU):** feature extraction (`src/features/*`), dataset/inspection scripts, anything using MediaPipe/OpenCV. MediaPipe has no GPU benefit here; this env has no CUDA torch.
+- **`D:\Anaconda3\envs\btp_lstm_gpu` (Python 3.10, CUDA torch 2.14.0+cu126):** all model training/inference — classifier (GRU/LSTM/1D-CNN), forecaster, anything using `torch`. User's pre-existing env (`btp_lstm_gpu`), had TensorFlow 2.10 + numpy/pandas/sklearn/xgboost already; added CUDA-enabled PyTorch + pyarrow on top. GPU: RTX 3050 6GB, driver supports CUDA 13.1.
+- **Rule: prefer GPU over CPU whenever there's a choice** (training, batch inference). CPU is fine for tasks that don't benefit from GPU (data loading, feature extraction, classical sklearn/xgboost on small tabular data — xgboost can optionally use `device="cuda"` if it becomes a bottleneck, but isn't required to).
+- Invoke directly by full interpreter path, e.g. `"D:/Anaconda3/envs/btp_lstm_gpu/python.exe" -m src.models.train_classifier`, rather than activating — keeps scripts callable from either env unambiguously.
+- TensorFlow is present in `btp_lstm_gpu` from prior use but **must not be used** in this project — PyTorch only, per the rule above. Don't import it in project code.
+
 ## Hardware protocol
 
 - Python → Arduino over serial, ASCII line `R:<level>\n`, level 0–3, ~2 Hz.

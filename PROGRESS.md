@@ -19,6 +19,36 @@
 **Files changed:** `.gitignore`, `requirements.txt`, `scripts/download_data.py`, `scripts/inspect_data.py`, `context.md` (dataset facts corrected), `PROGRESS.md` (new), directory skeleton with `.gitkeep` placeholders.
 
 **Open issues / next steps:**
-- Phase 1 (feature extraction) plan needs a small update before starting: drop the resample-by-timestamp step for training data (keep it for the live path), and decide which `lenN` variant(s) to actually load. Recommend `len60` as primary since it best matches the 30-60s window design; flag to user before locking this in since it affects Phase 1 design.
 - Hardware not yet ordered (plan Phase 0 item — outside this session's scope, user-side action).
-- Have not yet committed to git — pending user confirmation on first commit.
+
+## 2026-09-23 — Phase 1: Feature extraction pipeline
+
+**Decided:** use `len60` variant as the sole source (user confirmed) — fewest files, largest pre-cut windows, no double-counting the redundant length variants.
+
+**Done:**
+- `models/download_model.py` (actually `scripts/download_model.py`) — fetches MediaPipe FaceLandmarker `.task` model (not bundled in mediapipe 1.0.1's new Tasks API; old `mp.solutions.face_mesh` is gone in this version). Model gitignored, small refetch.
+- `src/features/landmarks.py` — pure functions: EAR (6-point, both eyes averaged), MAR, head pose (pitch/yaw/roll) from MediaPipe's facial transformation matrix. Single source of truth, no duplication between training/live paths.
+- `src/features/detector.py` — `FaceDetector` wrapper around MediaPipe Tasks `FaceLandmarker`, VIDEO running mode with `output_facial_transformation_matrixes=True`. Owns its own monotonic timestamp counter internally (see bug below) so any caller processing multiple clips through one instance is automatically safe.
+- `src/features/extract_features.py` — per subject/label: stitches len60 chunks back into one continuous per-frame timeline (chunks are just splits of one source video), interpolates missing-face gaps <0.5s, marks longer gaps invalid (never zero-fills), saves one parquet per subject/label to `features/`.
+- `src/features/windows.py` + `build_windows.py` — window-level derived features (PERCLOS, blink rate/duration via per-subject-calibrated EAR threshold, pitch/yaw variability), per-subject normalization (z-score against each subject's own non_drowsy baseline — mirrors the live system's 30s calibration), 45s windows / 5s stride, subject-grouped output with `usable_for_classifier` flag (False for subject 42).
+
+**Bug found and fixed:** MediaPipe's VIDEO-mode `detect_for_video` requires a strictly monotonically increasing timestamp on one `FaceLandmarker` instance. Initial version threaded per-call timestamps from the caller, reset to 0 per subject/label — crashed with "Input timestamp must be monotonically increasing" as soon as a second subject/label was processed through the shared detector. Root-caused and fixed at the source: `FaceDetector` now owns an internal always-incrementing counter, so `detect()` takes no timestamp argument and no caller can violate the invariant.
+
+**Running:** full extraction across all 119 subject/label videos (~2hr+ estimated from a 3-video smoke test — MediaPipe per-frame inference is the bottleneck, ~600 frames/video × 119). Will update this entry with final drop-rate stats once complete.
+
+**Open issues / next steps:**
+- Once extraction finishes: run `build_windows.py`, inspect `windows.parquet` and drop-rate report, then move to Phase 2 (classifier baseline + hardware loop).
+- Blink threshold uses 15th-percentile EAR from each subject's non-drowsy baseline — reasonable default, not validated against ground-truth blink annotations (UTA-RLDD doesn't provide them). Worth a sanity plot once data lands.
+
+## 2026-09-23 — GPU environment set up for model training
+
+**Decided (user request):** use local RTX 3050 6GB for all torch-based training/inference from here on, CPU only where there's no GPU alternative (feature extraction, data loading).
+
+**Done:**
+- Found user's pre-existing `btp_lstm_gpu` conda env (`D:\Anaconda3\envs\btp_lstm_gpu`, Python 3.10) — had TensorFlow 2.10 GPU + numpy/pandas/sklearn/xgboost from prior work, no PyTorch.
+- Installed CUDA-enabled PyTorch (2.14.0+cu126) and pyarrow into it. Verified with an actual GPU matmul (`torch.cuda.is_available()` True, device correctly identifies "NVIDIA GeForce RTX 3050 6GB Laptop GPU").
+- Documented the two-environment split in `context.md`: `.venv` (CPU, Python 3.13) for MediaPipe/feature extraction, `btp_lstm_gpu` (CUDA torch, Python 3.10) for all model training. TensorFlow is present in `btp_lstm_gpu` from prior use but must not be imported — PyTorch only per project rules.
+
+**Open issues / next steps:**
+- Phase 2/3 model training scripts (`src/models/*`) should be run via `"D:/Anaconda3/envs/btp_lstm_gpu/python.exe" -m ...`, not the project `.venv`.
+- xgboost baseline classifier could optionally use `device="cuda"` if training time on window-summary-stat features becomes a bottleneck — not required, data is small (a few thousand windows).
