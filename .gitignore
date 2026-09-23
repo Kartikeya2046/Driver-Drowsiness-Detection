@@ -1,5 +1,7 @@
 data/
 models/*.task
+features/sequences.npz
+.claude/
 *.pyc
 __pycache__/
 .venv/

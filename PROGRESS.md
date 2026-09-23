@@ -64,6 +64,28 @@
 - Sequence model (GRU/LSTM/1D-CNN) on raw windows not yet built — plan's "sequence model" comparison point for Phase 2.
 - Hardware loop (Arduino + serial protocol) not yet built — the other half of Deliverable 1.
 
+## 2026-09-23 — Phase 2: 1D-CNN sequence model trained (GPU), compared to XGBoost baseline
+
+**Refactor first:** extracted the per-subject normalization + baseline-loading loop (previously duplicated logic waiting to happen between the summary-stat window builder and a new raw-sequence builder) into `src/features/windows.py:iter_normalized_subject_labels()`. `build_windows.py` now just calls it; verified byte-identical window counts before/after (12,634, same per-subject/label breakdown) as a regression check.
+
+**Done:**
+- `src/features/build_sequences.py` — same window/stride/normalization as `build_windows.py`, but keeps raw per-frame arrays (450 frames x 5 channels: ear/mar/pitch/yaw/roll) instead of collapsing to summary stats. Output: `features/sequences.npz` (13MB, gitignored — trivially regeneratable from the already-committed `features/*.parquet`, no reason to bloat the repo with a derived cache).
+- `src/models/classifier_cnn.py` — small 1D-CNN (3 conv blocks, ~last channel 64, global avg pool, FC head, ~tens of thousands of params — kept small given ~12.6k windows / 60 subjects to limit overfitting risk). Same `StratifiedGroupKFold(seed=0)` subject-grouped 5-fold CV as the XGBoost baseline (identical fold assignments, for a fair comparison), same leakage assertion. Trained on GPU (confirmed via `nvidia-smi`: ~1GB VRAM, ~28% util during training — note Windows Task Manager's default "GPU" graph tracks the 3D engine, not Compute, so it can show ~0% for real CUDA work; `nvidia-smi` is the reliable check).
+
+**Results — CNN vs XGBoost baseline:**
+| | acc | f1 | auc |
+|---|---|---|---|
+| XGBoost (window stats) | 0.862 | 0.852 | 0.917 |
+| 1D-CNN (raw sequences) | 0.865 | 0.844 | 0.928 |
+
+Essentially comparable — CNN slightly ahead on accuracy/AUC, XGBoost slightly ahead on F1. Not a large win from raw sequence learning over hand-crafted summary stats at this data scale, which is itself an honest finding worth stating in the report rather than picking whichever model looks best.
+
+**Interesting:** the two models disagree on which subjects are hardest. XGBoost's worst 5 were 24, 09, 02, 48, 59 (see prior investigation — weak/inverted EAR signal). CNN's worst 5 are 02, 54, 28, 23, 24 — only 02 and 24 overlap. The CNN does noticeably *better* than XGBoost on subjects 09/60/15/48/59 (the ones with weak EAR separation), suggesting it's picking up temporal/sequential patterns the window-summary-stats can't capture — plausible since raw sequences retain information (e.g. exact timing/shape of eye closures, not just aggregate PERCLOS) that summary stats discard. Worth a line in the final report; not chasing further right now.
+
+**Open issues / next steps:**
+- Hardware loop (Arduino + serial protocol) — the remaining piece of Deliverable 1.
+- `models/classifier_cnn.pt` (116K) and `models/classifier_baseline.json` (324K) both committed — small, per project rule.
+
 ## 2026-09-23 — Investigated low-accuracy subjects (out-of-fold analysis)
 
 Computed out-of-fold predictions across all 5 CV folds to get true per-subject
