@@ -63,4 +63,37 @@
 **Open issues / next steps:**
 - Sequence model (GRU/LSTM/1D-CNN) on raw windows not yet built — plan's "sequence model" comparison point for Phase 2.
 - Hardware loop (Arduino + serial protocol) not yet built — the other half of Deliverable 1.
-- Should look at which subjects have low per-fold accuracy (e.g. min ~0.53-0.69) to understand whether it's a data-quality issue or a genuinely hard case, before treating 86% as the ceiling.
+
+## 2026-09-23 — Investigated low-accuracy subjects (out-of-fold analysis)
+
+Computed out-of-fold predictions across all 5 CV folds to get true per-subject
+accuracy (not just fold minimums). Worst: subject 24 (53%), 09 (57%), 02
+(60%), 48 (60%), 59 (63%), 60 (64%), 15 (65%). Saved to `per_subject_accuracy.csv`
+(not committed — quick analysis artifact, regeneratable).
+
+**Root cause, confirmed at the raw (unnormalized) per-frame level, not a
+pipeline bug:**
+- Subjects 09, 60, 15: raw drowsy-video mean EAR is roughly equal to, or
+  even *higher* (more open) than, their own non-drowsy baseline EAR. E.g.
+  subject 60: alert 0.194 vs "drowsy" 0.206. No eye-closure signal to learn
+  from for these subjects, sometimes inverted.
+- Subject 24 (worst overall): raw signal direction is correct (0.189 ->
+  0.163, ~14% drop, comparable magnitude to well-classified subjects) and
+  windows are class-balanced (208 drowsy / 196 non-drowsy), but still
+  near-chance — likely high within-video variance swamping the mean
+  difference at the 45s-window level. This subject's recording is unusually
+  long (~18 min vs the typical ~9 min), consistent with more internal
+  variability within the single labeled state.
+- Verified extraction quality isn't the cause: drop rates for all these
+  subjects are ~0% (see `feature_extraction_report.csv`).
+
+**Conclusion:** real inter-subject variability in how drowsiness manifests
+physically — some people show it through eye closure (PERCLOS-dominant,
+classify well), others don't show much visible eye-closure at all. This
+matches the plan's already-documented limitation (self-reported, per-video
+binary labels, no objective ground truth). Not a bug to fix; a negative
+result to report honestly. Possible future angles if it matters for the
+final report: richer features (head-nod rate is currently only pitch_std,
+could be more targeted), or the sequence model may pick up temporal
+patterns EAR/PERCLOS summary stats miss — but not chasing this now,
+86% aggregate accuracy stands as the honest baseline number.
