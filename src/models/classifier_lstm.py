@@ -1,11 +1,11 @@
-"""LSTM drowsiness classifier on raw per-frame sequences (features/sequences.npz).
+"""LSTM drowsiness classifier on raw per-frame sequences (features/dataset_cal{N}.npz).
 
 Usage: run via the GPU conda env:
-  "D:/Anaconda3/envs/btp_lstm_gpu/python.exe" -m src.models.classifier_lstm
+  "D:/Anaconda3/envs/btp_lstm_gpu/python.exe" -m src.models.classifier_lstm [--calib 30 60 120] [--final N]
 """
 import torch.nn as nn
 
-from src.models.sequence_training import run_cv
+from src.models.training import main
 
 
 class DrowsinessLSTM(nn.Module):
@@ -25,4 +25,4 @@ class DrowsinessLSTM(nn.Module):
 
 
 if __name__ == "__main__":
-    run_cv(DrowsinessLSTM, "lstm")
+    main(DrowsinessLSTM, "lstm")

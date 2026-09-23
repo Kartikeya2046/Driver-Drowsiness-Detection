@@ -27,18 +27,20 @@ This is a two-person university course project for **ICPS (Intro to Cyber-Physic
 
 ## Core design (decided — don't change without flagging)
 
-1. **Classifier** — drowsy now? Trained on windows (30–60 s) with binary labels. Baseline: XGBoost/RF on window stats; main: small GRU/LSTM/1D-CNN.
-2. **Forecaster** — predicts next 30–60 s of features from last 60 s. Self-supervised (no labels). Must be compared against persistence and linear-trend baselines.
-3. **Risk fusion** — `p_now` (classifier on current window) and `p_future` (classifier on forecast window) → level 0–3 with hysteresis.
+1. **Classifier** — drowsy now? 45 s windows / 5 s stride, binary labels. Built and compared: XGBoost (window stats), 1D-CNN, GRU, LSTM (raw sequences), average + stacked ensembles. **GRU is the live/deployed model** (single-model latency); the ensemble is reported as the accuracy ceiling only, not deployed.
+2. **Forecaster** — predicts the next 30–60 s of **coarse per-5 s aggregates** (PERCLOS, mean EAR, blink rate, blink duration) from the last 60 s, not raw 10 fps frames. Self-supervised, trained on real within-video data only (never on synthetic ramps — circular). Must be compared against persistence and linear-trend baselines.
+3. **Three predictive signals, compared head-to-head** through the same risk fusion: (a) reactive `p_now` only, (b) trend / time-to-threshold on the `p_now` + PERCLOS trajectory, (c) forecaster → classifier on forecast → `p_future`. The predictive claim must be *measured* against (a), not assumed.
+4. **Risk fusion** — `p_now` and `p_future` → level 0–3 with hysteresis. Probabilities calibrated (Platt/isotonic) and thresholds tuned on training subjects only.
    - 0 safe (green), 1 `p_future` rising (yellow), 2 `p_future` high (vibration), 3 `p_now` high (buzzer).
-4. **Lead-time evaluation** — stitched non-drowsy→drowsy sequences per subject, plus self-recorded sessions with KSS (Karolinska Sleepiness Scale) ratings.
+5. **Lead-time evaluation** — primary synthetic benchmark: **ramped transitions** (interleaved 5–10 s chunks of a test subject's alert/drowsy footage with a rising drowsy fraction, varied duration and shape). Hard splice (alert video → drowsy video) is a **negative control** only (no precursor exists, so "early" alarms there are false alarms). Real validation: self-recorded sessions with KSS (Karolinska Sleepiness Scale) ratings every 5 min.
 
 ## Non-negotiable rules
 
 - **Split by subject, never by window/frame.** 5-fold subject-grouped CV. Leakage makes results meaningless.
-- **Resample videos by timestamp** to a fixed rate (~10 fps). Don't use "every Nth frame."
-- **Per-subject normalization** of features (from non-drowsy video stats); live system uses a 30 s calibration.
-- **One feature-extraction code path** shared by training and real-time inference. No reimplementation.
+- **Resample videos by timestamp** to a fixed rate (~10 fps). Don't use "every Nth frame." (Training data is already 10 fps; this applies to live webcam and self-recorded data.)
+- **Per-subject calibration, deployment-faithful** (Phase 2b): subtract the per-channel **median of a calibration window** — training: first N s of the subject's alert video; live: first N s of the session. The first 120 s of every alert video are reserved for calibration and **never appear in evaluation windows**. N ∈ {30, 60, 120} s is an evaluated parameter. **Never normalize against a whole video** — XGBoost went from 84.8% to 75.8–78.1% once made deployable (see `PROGRESS.md`). Code: `src/features/windows.py:calibrate()` / `apply_calibration()`.
+- **One feature-extraction code path** shared by training and real-time inference. No reimplementation — the live loop calls the same `calibrate()` / `apply_calibration()` / `window_features()`.
+- **All classifiers share one fixed split** (`src/models/training.py:cv_folds`) and one dataset file per calibration length (`features/dataset_cal{N}.npz`, summary stats + sequences aligned by construction). Neural models are seeded and reported as mean ± std over 3 seeds.
 - **Missing faces:** interpolate gaps < 0.5 s; longer gaps → invalid windows. Never silently zero-fill. Log drop rates.
 - **Never commit `data/`** (gitignored). Commit code, small feature files, and small model weights only.
 - Exclude subject 42 from classifier evaluation; it may be used for forecaster training.
@@ -55,7 +57,7 @@ This is a two-person university course project for **ICPS (Intro to Cyber-Physic
 - **`.venv/` (project root, Python 3.13, CPU):** feature extraction (`src/features/*`), dataset/inspection scripts, anything using MediaPipe/OpenCV. MediaPipe has no GPU benefit here; this env has no CUDA torch.
 - **`D:\Anaconda3\envs\btp_lstm_gpu` (Python 3.10, CUDA torch 2.14.0+cu126):** all model training/inference — classifier (GRU/LSTM/1D-CNN), forecaster, anything using `torch`. User's pre-existing env (`btp_lstm_gpu`), had TensorFlow 2.10 + numpy/pandas/sklearn/xgboost already; added CUDA-enabled PyTorch + pyarrow on top. GPU: RTX 3050 6GB, driver supports CUDA 13.1.
 - **Rule: prefer GPU over CPU whenever there's a choice** (training, batch inference). CPU is fine for tasks that don't benefit from GPU (data loading, feature extraction, classical sklearn/xgboost on small tabular data — xgboost can optionally use `device="cuda"` if it becomes a bottleneck, but isn't required to).
-- Invoke directly by full interpreter path, e.g. `"D:/Anaconda3/envs/btp_lstm_gpu/python.exe" -m src.models.train_classifier`, rather than activating — keeps scripts callable from either env unambiguously.
+- Invoke directly by full interpreter path, e.g. `"D:/Anaconda3/envs/btp_lstm_gpu/python.exe" -m src.models.classifier_gru`, rather than activating — keeps scripts callable from either env unambiguously.
 - TensorFlow is present in `btp_lstm_gpu` from prior use but **must not be used** in this project — PyTorch only, per the rule above. Don't import it in project code.
 
 ## Hardware protocol
@@ -70,7 +72,9 @@ This is a two-person university course project for **ICPS (Intro to Cyber-Physic
 
 ```
 data/           raw videos (gitignored)
-features/       per-video extracted features
+features/       per-video extracted features (committed); dataset_cal{N}.npz (gitignored, rebuild with src.features.build_dataset)
+models/         deployable model weights (small, committed); MediaPipe .task (gitignored, scripts/download_model.py)
+results/        summary tables (committed); oof_*.npy out-of-fold predictions (gitignored, regenerated by the classifier scripts)
 src/features/   landmark → feature code (shared by train + live)
 src/models/     classifier, forecaster, risk fusion
 src/realtime/   live loop, serial client, dashboard
@@ -92,7 +96,10 @@ notebooks/      exploration only — logic lives in src/
 - The user works in ML/data science and is comfortable with technical detail — no need to over-explain basics.
 - **After finishing any task or phase, log it in `PROGRESS.md`** (create it if missing). Each entry: date, phase/task, what was done, key results or numbers, files changed, and any open issues or next steps. Append new entries; never rewrite old ones.
 
-## Current status
+## Current status (2026-09-23)
 
-- Project idea, dataset, architecture, and plan finalized.
-- Next step: Phase 0 (repo setup, dataset download and inspection) → Phase 1 (feature extraction).
+- **Done:** Phase 0 (setup), Phase 1 (feature extraction, 60 subjects), Phase 2 (XGBoost/CNN/GRU/LSTM/ensembles), Phase 2b (deployment-faithful re-evaluation).
+- **Headline numbers (deployable protocol, `results/phase2b_summary.csv`):** GRU 78.8% acc / 0.858 AUC at 60 s calibration (mean of 3 seeds); stacked-ensemble ceiling 81.3% / 0.880. The earlier 86–91% Phase 2 numbers are **superseded** (full-video normalization, not deployable) — don't quote them as results.
+- **Deploy model:** `models/classifier_gru.pt` = {`state_dict`, `channel_scale`, `calib_s`=60}. Inference: `calibrate()` on the first 60 s → `apply_calibration()` → 45 s window of (ear, mar, pitch, yaw, roll) → divide by `channel_scale` → GRU → sigmoid.
+- **Deferred:** hardware loop (user decision; decoupled, serial protocol only). Hardware not yet ordered.
+- **Next:** Phase 3 (predictive layer, per the revised `plan.md`). KSS self-recordings should start now (raw webcam video + timestamps + KSS every 5 min).

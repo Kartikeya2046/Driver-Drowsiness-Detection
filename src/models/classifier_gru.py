@@ -1,11 +1,11 @@
-"""GRU drowsiness classifier on raw per-frame sequences (features/sequences.npz).
+"""GRU drowsiness classifier on raw per-frame sequences (features/dataset_cal{N}.npz).
 
 Usage: run via the GPU conda env:
-  "D:/Anaconda3/envs/btp_lstm_gpu/python.exe" -m src.models.classifier_gru
+  "D:/Anaconda3/envs/btp_lstm_gpu/python.exe" -m src.models.classifier_gru [--calib 30 60 120] [--final N]
 """
 import torch.nn as nn
 
-from src.models.sequence_training import run_cv
+from src.models.training import main
 
 
 class DrowsinessGRU(nn.Module):
@@ -25,4 +25,4 @@ class DrowsinessGRU(nn.Module):
 
 
 if __name__ == "__main__":
-    run_cv(DrowsinessGRU, "gru")
+    main(DrowsinessGRU, "gru")

@@ -10,10 +10,10 @@ ICPS (Intro to Cyber-Physical Systems) course project. Theme: predictive technol
 |---|---|
 | 0 — Setup | DONE (hardware not yet ordered) |
 | 1 — Feature extraction | DONE (60 subjects, 0.1% mean face-drop rate) |
-| 2 — Classifiers | DONE but **optimistic**: XGBoost / CNN / GRU / LSTM / ensemble = 86–91% acc, evaluated with full-video normalization that the live system can't replicate. Deployment-faithful numbers are ~13 pp lower → **Phase 2b** |
+| 2 — Classifiers | DONE; the original 86–91% numbers were optimistic (full-video normalization) and are superseded by Phase 2b |
 | 2 — Hardware loop | DEFERRED (user decision; fully decoupled, serial protocol only) |
-| 2b — Deployment-faithful re-evaluation | **NEXT** (new, added on reassessment) |
-| 3 — Predictive layer | Revised design below (forecaster target, ramped transitions, trend comparator) |
+| 2b — Deployment-faithful re-evaluation | DONE — GRU 78.8% acc / 0.858 AUC (60 s calibration, 3 seeds); stacked ensemble ceiling 81.3% / 0.880. Deploy model: `models/classifier_gru.pt` (60 s calibration) |
+| 3 — Predictive layer | **NEXT** — revised design below (forecaster target, ramped transitions, trend comparator) |
 | 4, 5 | Not started; small additions below |
 
 ---
@@ -158,6 +158,22 @@ Every forecaster/risk/lead-time result in Phase 3 sits on top of the classifier,
 4. **Seed everything; report NN results as mean ± std over 3 seeds** — observed run-to-run variance (~1 pp) is as large as some of the model gaps.
 5. **Video-level accuracy** (aggregate windows per video) — planned in Phase 2, not yet computed.
 6. The live loop must call the **same calibration function** (one code path).
+
+**Results (DONE 2026-09-23; full table in `results/phase2b_summary.csv`):** mean ± std over 3 seeds (XGBoost is deterministic, so no std), 11,214 windows / 59 subjects, identical eval windows for every calibration length.
+
+| Model | 30 s acc / AUC | 60 s acc / AUC | 120 s acc / AUC |
+|---|---|---|---|
+| XGBoost | 0.758 / 0.836 | 0.753 / 0.841 | 0.781 / 0.867 |
+| CNN | 0.751 / 0.823 | 0.745 / 0.811 | 0.734 / 0.800 |
+| **GRU** | 0.780 / 0.848 | **0.788 / 0.858** | 0.789 / 0.850 |
+| LSTM | 0.723 / 0.786 | 0.736 / 0.800 | 0.758 / 0.817 |
+| Avg ensemble | 0.800 / 0.881 | 0.800 / 0.881 | 0.801 / 0.881 |
+| Stacked ensemble | 0.796 / 0.873 | 0.799 / 0.873 | **0.813 / 0.880** |
+
+- GRU stays the best single model and the live model. It's nearly insensitive to calibration length (30 → 120 s = +0.9 pp, about one seed std), so **60 s is the live default** (best GRU AUC, half the wait of 120 s).
+- CNN and LSTM drop below XGBoost under the deployable protocol. The Phase 2 CNN ≈ GRU result depended on full-video normalization.
+- Ensembles are still the ceiling (+1–2.5 pp acc, +2–3 pp AUC over GRU), reported only, not deployed.
+- Video-level accuracy (118 videos): GRU 0.859 at 60 s; best is the stacked ensemble at 60 s (0.895) and XGBoost at 120 s (0.890).
 
 ### Phase 3 — Predictive Layer → Core of Deliverable 2 (Weeks 5–8)
 

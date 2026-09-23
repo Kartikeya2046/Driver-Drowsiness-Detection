@@ -1,6 +1,7 @@
 data/
 models/*.task
-features/sequences.npz
+features/dataset_cal*.npz
+results/oof_*.npy
 .claude/
 *.pyc
 __pycache__/

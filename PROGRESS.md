@@ -192,3 +192,39 @@ Takeaways: calibration is still worth ~+6 pp over none; median shift beats z-sco
 - `context.md` still says "live system uses a 30 s calibration" — now superseded by Phase 2b's evaluated calibration length. Not edited (user limited this change to plan.md); needs updating once Phase 2b picks the length.
 - Calibration length for the live/demo system (30 vs 120 s) is a user-facing trade-off (accuracy vs startup wait) — decide after the Phase 2b curve.
 - Hardware still deferred; KSS recordings not yet started.
+
+## 2026-09-23 — Phase 2b: deployment-faithful re-evaluation (DONE)
+
+**Pipeline changes:**
+- `src/features/windows.py`: replaced full-video z-score (`normalize_frame_df` / `iter_normalized_subject_labels`) with `calibrate()` (per-channel median + blink threshold from a calibration window) and `apply_calibration()` (median shift) — the same pair the live loop will call. `iter_calibrated_videos(calib_s)` reserves the first 120 s of every alert video for calibration and never evaluates it, so eval windows are identical across calibration lengths. `make_windows()` now returns summary stats **and** raw sequences from the same window boundaries.
+- `src/features/build_dataset.py` (replaces `build_windows.py` + `build_sequences.py`): one `features/dataset_cal{N}.npz` per N ∈ {30, 60, 120}, holding tabular + sequence features aligned by construction (removes the `t_start` merge). 11,214 windows / 59 subjects each (subject 42 excluded: no drowsy video).
+- `src/models/training.py` (was `sequence_training.py`): shared `load_dataset` / `cv_folds` (one fixed split + leakage assertion) / `evaluate` (acc, f1, auc, **video-level acc** — aggregate window probs per video, 118 videos). NN training is seeded, keeps the dataset GPU-resident (~13–23 s per fold, several times faster than the DataLoader version), and divides each channel by its training-set std (median-shifted inputs are in raw units: EAR ~0.05 vs pose ~5–8°). OOF probabilities saved to `results/oof_*.npy` (gitignored). CLI: `--calib 30 60 120`, `--final N`.
+- `classifier_baseline.py` / `_cnn` / `_gru` / `_lstm` use the shared harness. `stacking_ensemble.py` now just combines saved OOFs (no retraining) and writes `results/phase2b_summary.csv`.
+- Removed stale artifacts built with the old normalization: `features/windows.parquet`, `features/sequences.npz`, `models/classifier_{baseline.json,cnn.pt,lstm.pt}`, old `classifier_gru.pt`.
+
+**Results (mean ± std over 3 seeds; XGBoost deterministic):**
+| Model | 30 s acc / AUC | 60 s acc / AUC | 120 s acc / AUC |
+|---|---|---|---|
+| XGBoost | 0.758 / 0.836 | 0.753 / 0.841 | 0.781 / 0.867 |
+| CNN | 0.751±0.001 / 0.823 | 0.745±0.012 / 0.811 | 0.734±0.004 / 0.800 |
+| GRU | 0.780±0.006 / 0.848 | 0.788±0.007 / 0.858 | 0.789±0.006 / 0.850 |
+| LSTM | 0.723±0.019 / 0.786 | 0.736±0.005 / 0.800 | 0.758±0.009 / 0.817 |
+| Avg ensemble | 0.800 / 0.881 | 0.800 / 0.881 | 0.801 / 0.881 |
+| Stacked ensemble | 0.796 / 0.873 | 0.799 / 0.873 | 0.813 / 0.880 |
+
+Video-level acc: GRU 0.825 / 0.859 / 0.845; best overall is the stacked ensemble at 60 s (0.895) and XGBoost at 120 s (0.890).
+
+**Findings:**
+- Versus Phase 2 (optimistic): GRU 0.889 → 0.788, stacked ensemble 0.912 → 0.813. Every model lost ~8–13 pp once normalization was made deployable.
+- GRU is still the best single model and barely depends on calibration length (+0.9 pp from 30 → 120 s, about one seed std). XGBoost benefits most from longer calibration (+2.3 pp).
+- CNN and LSTM fell below XGBoost. The Phase 2 "CNN ≈ GRU" result relied on full-video normalization. LSTM also has the largest seed variance (±0.019 at 30 s).
+- Ensembles still add +1–2.5 pp acc and +2–3 pp AUC over GRU. Reported as the ceiling, not deployed.
+
+**Decision:** live calibration = **60 s** (best GRU AUC, +0.8 pp over 30 s, half the wait of 120 s). Deploy model trained on all data: `models/classifier_gru.pt` = {`state_dict`, `channel_scale`, `calib_s`=60} (68K, committed).
+
+**Docs:** `plan.md` (status, Phase 2b results) and `context.md` (core design, calibration rule, repo layout, current status) updated per user request.
+
+**Open issues / next steps:**
+- Phase 3 (predictive layer) is next.
+- Calibration-length curve figure → Phase 5 report figures (data in `results/phase2b_summary.csv`).
+- KSS self-recordings not started; hardware still deferred and not ordered.

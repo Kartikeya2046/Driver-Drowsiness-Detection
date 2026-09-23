@@ -1,11 +1,11 @@
-"""1D-CNN drowsiness classifier on raw per-frame sequences (features/sequences.npz).
+"""1D-CNN drowsiness classifier on raw per-frame sequences (features/dataset_cal{N}.npz).
 
 Usage: run via the GPU conda env:
-  "D:/Anaconda3/envs/btp_lstm_gpu/python.exe" -m src.models.classifier_cnn
+  "D:/Anaconda3/envs/btp_lstm_gpu/python.exe" -m src.models.classifier_cnn [--calib 30 60 120] [--final N]
 """
 import torch.nn as nn
 
-from src.models.sequence_training import run_cv
+from src.models.training import main
 
 
 class DrowsinessCNN(nn.Module):
@@ -39,4 +39,4 @@ class DrowsinessCNN(nn.Module):
 
 
 if __name__ == "__main__":
-    run_cv(DrowsinessCNN, "cnn")
+    main(DrowsinessCNN, "cnn")
