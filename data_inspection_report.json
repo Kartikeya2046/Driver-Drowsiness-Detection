@@ -1,0 +1,57 @@
+{
+  "lengths": [
+    "len10",
+    "len20",
+    "len30",
+    "len5",
+    "len60"
+  ],
+  "n_subjects": 60,
+  "label_counts": {
+    "0": 3538,
+    "10": 3511
+  },
+  "subjects_missing_label": {
+    "10": [
+      "42"
+    ],
+    "0": []
+  },
+  "sample_video_props": {
+    "len10": {
+      "fps": 10.0,
+      "n_frames": 100.0,
+      "width": 224,
+      "height": 224,
+      "duration_s": 10.0
+    },
+    "len20": {
+      "fps": 10.0,
+      "n_frames": 200.0,
+      "width": 224,
+      "height": 224,
+      "duration_s": 20.0
+    },
+    "len30": {
+      "fps": 10.0,
+      "n_frames": 300.0,
+      "width": 224,
+      "height": 224,
+      "duration_s": 30.0
+    },
+    "len5": {
+      "fps": 10.0,
+      "n_frames": 50.0,
+      "width": 224,
+      "height": 224,
+      "duration_s": 5.0
+    },
+    "len60": {
+      "fps": 10.0,
+      "n_frames": 600.0,
+      "width": 224,
+      "height": 224,
+      "duration_s": 60.0
+    }
+  }
+}

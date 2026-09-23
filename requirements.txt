@@ -1,0 +1,12 @@
+opencv-python==5.0.0.93
+mediapipe==1.0.1
+numpy==2.5.3
+pandas==3.0.6
+scikit-learn==1.9.1
+xgboost==3.4.1
+torch==2.14.0
+pyserial==3.5
+streamlit==1.64.0
+kaggle==2.2.4
+pyarrow==25.0.1
+matplotlib==3.11.2
