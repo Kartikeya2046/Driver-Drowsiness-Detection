@@ -103,8 +103,34 @@ Essentially comparable — CNN slightly ahead on accuracy/AUC, XGBoost slightly 
 **User idea considered and declined:** per-subject model routing (use whichever of the 4 models scores best for each specific subject, use that one for them). Explained why this doesn't work: choosing per-subject winners requires seeing each subject's held-out test accuracy, i.e. using test-set labels to pick the model - that's leakage, and the resulting "ensemble" accuracy wouldn't be a valid generalization estimate. It's also undeployable: a real new driver has no ground truth to know in advance which model suits them. Proposed a legitimate alternative instead - a standard prediction-averaging/stacking ensemble across all 4 models (no subject-specific routing, no leakage) - pending user decision on whether to build it.
 
 **Open issues / next steps:**
-- Ensemble (avg/stack all 4 models' probabilities) - proposed, not yet built, awaiting go-ahead.
-- Hardware loop still outstanding.
+- **Hardware loop deferred by user request (2026-09-23)** — user confirmed it's fully decoupled from the software (only touchpoint is the serial protocol, `R:<level>\n` at ~2Hz + `ACK\n` on button press; Arduino side is built/tested with hardcoded levels, no model needed). Parking as an open task, pick up whenever — doesn't block any other Phase 2/3 work.
+
+## 2026-09-23 — Stacking ensemble built and evaluated
+
+**Done:**
+- Added `t_start` to `features/sequences.npz` (`build_sequences.py`) as an explicit join key — `windows.parquet` (XGBoost's summary-stat features) and `sequences.npz` (raw arrays for CNN/GRU/LSTM) are two independently-built files; rather than assume their row order matches, `src/models/stacking_ensemble.py:load_aligned()` merges them on `(subject, label_binary, t_start)` with `validate="one_to_one"` plus an explicit row-count assertion, so a silent misalignment would raise instead of silently corrupting every downstream number.
+- `src/models/stacking_ensemble.py`: honest (non-leaky) stacking — every window's 4 base-model predictions come from a fold where that window's subject was held out during that model's training; the logistic-regression meta-learner is then evaluated via the same folds (meta-trained only on other folds' OOF predictions).
+- Also computed a zero-training unweighted-average ensemble as a baseline comparison to the learned stacking layer.
+
+**Results (subject-grouped 5-fold CV, all via OOF predictions):**
+| Model | Accuracy | F1 | ROC-AUC |
+|---|---|---|---|
+| XGBoost | 0.862 | 0.854 | 0.915 |
+| CNN | 0.869 | 0.851 | 0.930 |
+| GRU | 0.891 | 0.884 | 0.937 |
+| LSTM | 0.873 | 0.864 | 0.924 |
+| Average ensemble (unweighted mean) | 0.907 | 0.900 | 0.960 |
+| Stacked ensemble (logistic regression) | 0.912 | 0.908 | 0.959 |
+
+Base-model numbers closely match the earlier standalone runs (small run-to-run variance from unseeded training, same as before) — a useful sanity check that the merge-based alignment is correct, not just assumed.
+
+**Both ensembling approaches meaningfully beat every individual model, including GRU** (+2pp acc / +2pp AUC over GRU alone for the average ensemble). Almost all of the gain comes from the free unweighted average; the learned stacking meta-learner only adds ~0.5pp on top — an honest finding that the extra complexity buys comparatively little here.
+
+**Notable:** the meta-learner consistently weights XGBoost highest and GRU lowest, despite GRU being the best individual model (e.g. fold 0 weights: xgboost=3.30, cnn=2.29, lstm=1.97, gru=1.42). Not a bug — a stacking meta-learner weights models by how much *unique* signal they add beyond the others, not standalone accuracy. XGBoost (tree-based, hand-crafted summary stats) is architecturally the most different from the three neural sequence models, so it contributes the most complementary information; GRU's errors likely correlate heavily with CNN/LSTM's, so it gets down-weighted.
+
+**Decision (user-directed):** GRU remains the priority model for the live/real-time system (single-model inference, latency-sensitive). The ensemble result (91.2% acc / 0.959 AUC) is documented as the reportable "ceiling if 4x inference cost weren't a constraint" rather than adopted for deployment — no code wires the ensemble into the live loop.
+
+Worst subjects for the stacked ensemble: 02 (0.51, near chance — hardest across every architecture tried, worth a mention as a genuinely hard case), 60, 15, 24, 23.
 
 ## 2026-09-23 — Investigated low-accuracy subjects (out-of-fold analysis)
 
