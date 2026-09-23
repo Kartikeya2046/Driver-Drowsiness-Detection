@@ -165,3 +165,30 @@ final report: richer features (head-nod rate is currently only pitch_std,
 could be more targeted), or the sequence model may pick up temporal
 patterns EAR/PERCLOS summary stats miss — but not chasing this now,
 86% aggregate accuracy stands as the honest baseline number.
+
+## 2026-09-23 — Plan reassessment (plan.md updated)
+
+**Key finding — Phase 2 accuracy is optimistic.** Phase 2 normalized each subject against their *entire* non-drowsy video, but the live system only gets a short calibration (and non-drowsy test windows were normalized with stats that included themselves). Quick XGBoost check on identical eval windows (first 120 s of every alert video held out), same subject-grouped CV:
+
+| Normalization | Deployable | Acc | AUC |
+|---|---|---|---|
+| Full-video z-score (Phase 2) | no | 0.848 | 0.914 |
+| 30 s z-score (original live plan) | yes | 0.738 | 0.807 |
+| 60 s z-score | yes | 0.757 | 0.826 |
+| 120 s z-score | yes | 0.775 | 0.851 |
+| 30 s median shift | yes | 0.758 | 0.836 |
+| 120 s median shift | yes | 0.781 | 0.867 |
+| No normalization | yes | 0.723 | 0.790 |
+
+Takeaways: calibration is still worth ~+6 pp over none; median shift beats z-score at equal length; longer calibration helps. Honest deployable XGBoost ≈ 78%, not 86%. All Phase 2 models share this normalization, so all their numbers are upper bounds. (Throwaway inline script, not committed — reproduced by Phase 2b.)
+
+**plan.md changes:**
+- Status table at top; corrected dataset facts (10 fps / 224×224, 4–18 min recordings).
+- **New Phase 2b (next):** median-shift calibration-window normalization, calibration length 30/60/120 s as an evaluated parameter, re-run all classifiers + ensemble reporting optimistic vs deployable numbers, seed NN runs (mean ± std over 3 seeds), add video-level accuracy.
+- **Phase 3 redesign:** forecaster predicts coarse per-5 s aggregates instead of raw 10 fps frames (raw EAR is unforecastable blink noise); Transformer dropped; three predictive signals compared head-to-head (reactive / trend time-to-threshold / forecaster); probability calibration + thresholds tuned on training subjects only; **ramped synthetic transitions** (interleaved alert/drowsy chunks with rising drowsy fraction) replace the hard splice as the primary lead-time benchmark, since a hard splice has no precursor and can't show genuine lead time (kept as a negative control); KSS self-recording should **start now** (raw video + timestamps, processed offline later).
+- Phase 4: face-crop to 224×224 before landmarking + feature-distribution check (webcam domain shift). Phase 5 and risk table updated to match.
+
+**Open issues / next steps:**
+- `context.md` still says "live system uses a 30 s calibration" — now superseded by Phase 2b's evaluated calibration length. Not edited (user limited this change to plan.md); needs updating once Phase 2b picks the length.
+- Calibration length for the live/demo system (30 vs 120 s) is a user-facing trade-off (accuracy vs startup wait) — decide after the Phase 2b curve.
+- Hardware still deferred; KSS recordings not yet started.
