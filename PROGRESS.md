@@ -366,3 +366,10 @@ Added `LiveLoop.latency_report()`: wall-clock time per processing tick (frame ->
 `draw_overlay()` + `--show` in `live_loop.py`: on-frame EAR, PERCLOS (over the current 45s window), p_now, and alert level, with a color-coded border (green/yellow/orange/red matching the risk levels). Chosen over a separate Streamlit app: no new process/dependency, fits directly in the loop already running, and a physical demo (laptop + screen) doesn't need a browser. Sanity-checked `draw_overlay()` directly on a dummy frame (this environment has no display to open a real cv2 window) — **user should try `--source 0 --show` on their own machine** to see the live window.
 
 **Phase 4 is now functionally complete**: face-crop webcam pipeline, domain-shift check, live loop (calibration -> GRU -> risk -> serial, works with or without hardware attached), latency/FPS measurement (well within budget), on-frame dashboard. Not yet possible: true actuator latency and the physical demo script (hardware not ordered/arrived).
+
+## 2026-09-29 — Phase 5 step 1: consolidated report + figures
+
+`src/eval/make_report_figures.py`: 4 figures from existing result tables (no new experiments) — `results/figures/{calibration_curve,forecaster_baselines,leadtime_curve,leadtime_vs_duration}.png`.
+`REPORT.md`: consolidated Phase 2-4 results (optimistic vs deployable classifier numbers, forecaster vs baselines, lead-time/false-alarm results, domain-shift + live-loop findings, latency), what's not done and why (hardware, KSS recordings), and a limitations section for the write-up. Everything traces back to the dated `PROGRESS.md` entry that produced it.
+
+**Remaining for Phase 5:** the physical demo script needs the hardware (not ordered). Per-subject variability write-up and different-horizon ablations are already covered in REPORT.md / Phase 3 results; no further analysis planned unless the user asks.
