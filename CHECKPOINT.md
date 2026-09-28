@@ -1,8 +1,8 @@
 # Session Checkpoint — resume here
 
-**Last session:** 2026-09-23 (paused by user). **Last commit:** `0528124` (Phase 2b). Working tree clean.
+**Last session:** 2026-09-29. **Last commit:** `47073ab` (Phase 5 report). Working tree: `hardware_list.md` untracked (prior session, never committed — ask user), `data_inspection_report.json` has a stray pre-existing whitespace diff (not from this project's work, left alone).
 
-Read order when resuming: **`context.md`** (rules, design, envs) → **this file** (where we stopped, why, what's next) → `plan.md` (full phase plan) → `PROGRESS.md` (detailed log with every number).
+Read order when resuming: **`context.md`** (rules, design, envs) → **this file** → `REPORT.md` (consolidated results) → `PROGRESS.md` (detailed log, every number, every decision with rationale) → `plan.md` (full phase plan, now mostly historical).
 
 ---
 
@@ -10,79 +10,52 @@ Read order when resuming: **`context.md`** (rules, design, envs) → **this file
 
 | Phase | State |
 |---|---|
-| 0 Setup | DONE (hardware not ordered) |
-| 1 Feature extraction | DONE: 119 per-frame parquet files in `features/`, 0.1% mean face-drop rate |
-| 2 Classifiers | DONE, but numbers superseded by 2b |
-| 2 Hardware loop | **DEFERRED by user**: decoupled from software (serial `R:<level>\n` only), pick up any time |
-| 2b Deployment-faithful re-eval | **DONE**: GRU 78.8% acc / 0.858 AUC at 60 s calibration (3 seeds) |
-| 3 Predictive layer | **NEXT** |
-| 4 Real-time, 5 Report | not started |
+| 0-2b | DONE (see REPORT.md §2) |
+| 3 Predictive layer | **DONE** — forecaster, ramps, risk fusion, lead-time eval (REPORT.md §3) |
+| 4 Real-time | **DONE (software side)** — live loop, domain-shift check, latency, dashboard (REPORT.md §4). Hardware loop still not ordered. |
+| 5 Report | Consolidated report + figures done (`REPORT.md`, `results/figures/`). Physical demo script blocked on hardware. |
 
-**Headline numbers to quote (deployable protocol, `results/phase2b_summary.csv`):** GRU 78.8% / 0.858 AUC, video-level 85.9%; stacked ensemble ceiling 81.3% / 0.880. Do **not** quote Phase 2's 86–91%: that was full-video normalization, not deployable.
+**Deploy model:** `models/classifier_gru.pt`, reactive-only (no forecaster in the live loop — see REPORT.md §3 for why). Live loop: `python -m src.realtime.live_loop --source 0 --port COM3` (or a video file path instead of `0`; omit `--port` to log serial instead of sending).
 
-**Deploy model:** `models/classifier_gru.pt` = `{state_dict, channel_scale, calib_s=60}`.
-Inference: `calibrate()` on the first 60 s → `apply_calibration()` → 45 s window of (ear, mar, pitch, yaw, roll) → `/ channel_scale` → `DrowsinessGRU` → sigmoid.
+**Standing rule (2026-09-29, memory `feedback_autonomous_decisions.md`): full automode.** Weigh alternatives, decide, implement, test, commit, and move to the next step without stopping to ask — including between phases. Only stop for genuine blockers (info only the user has, hardware they need to act on) or decisions that change user-facing behavior.
 
 ---
 
-## 2. Decisions made this session, and why
+## 2. What's actually blocking further progress
 
-| Decision | Why | Who |
-|---|---|---|
-| Use `len60` dataset variant only | Other `lenN` folders are re-cuts of the same footage, not extra data | User confirmed |
-| All torch/xgboost training on GPU (`btp_lstm_gpu` env) | User instruction: GPU whenever there's a choice | User |
-| Hardware loop deferred | User doesn't want to do it now; fully decoupled | User |
-| **GRU = live model** | Best single model before and after 2b; single-model latency | User ("keep GRU top priority") |
-| Ensemble reported as ceiling, **not deployed** | 4× inference cost for +1–2.5 pp | User agreed |
-| Per-subject model routing **rejected** | Picking the best model per subject needs that subject's test labels (leakage) and can't be done for an unseen driver | User's idea; declined with explanation, user moved to stacking instead |
-| Calibration = median shift of a calibration window, not full-video z-score | Full-video stats aren't available live and inflated accuracy by ~8–13 pp | Found in plan reassessment; user approved 2b |
-| **Live calibration = 60 s** | Best GRU AUC; +0.8 pp over 30 s; 120 s adds only +0.1 pp for double the wait | Claude's call, flagged: one flag to change (`--final N`) |
-| Phase 3 redesign | Single-state videos: a forecaster never sees onset, and a hard splice has no precursor. So compare reactive vs trend vs forecaster, evaluate on **ramped** synthetic transitions, and use the hard splice as negative control | Plan reassessment; user approved |
+1. **Hardware not ordered.** `hardware_list.md` has the exact parts list. Until it arrives: can't build/test the Arduino sketch, can't measure true actuator latency, can't run the physical demo script (calibrate → green → yellow/vibration → buzzer → button → green).
+2. Nothing else is blocked. If the user wants more work before hardware arrives, options (not yet started, not requested):
+   - A second webcam recording (different lighting/person) to strengthen the domain-shift n=1 finding.
+   - Arduino sketch itself (`hardware/*.ino`) can be written and tested with hardcoded levels *without* waiting for the ML side — it's decoupled by design (serial protocol only). Could be started once parts arrive, or the sketch code itself could be drafted now against the documented protocol even without hardware to flash it to (untestable without the board, but the code could exist).
 
 ---
 
-## 3. Next steps (Phase 3, in order)
-
-1. **Forecaster dataset:** per-5 s aggregate features (reuse `window_features()` with 5 s windows / 5 s stride on calibrated per-frame data). Include subject 42 for forecaster training.
-2. **Forecaster:** small seq2seq GRU, 12 steps (60 s) in → 6–12 steps (30–60 s) out. Baselines: persistence and linear trend. Report MAE/RMSE at 10 / 30 / 60 s, subject-grouped CV. Train on real within-video data only, **never on synthetic ramps** (circular).
-3. **Ramped transition builder:** per test subject, interleave 5–10 s chunks of their alert and drowsy per-frame features, with the drowsy fraction rising 0 → 100%. Vary duration (2–10 min) and shape (linear/sigmoid). Onset = drowsy fraction first reaches 50%.
-4. **Three predictive signals through one risk fusion:** (a) reactive `p_now`, (b) trend / time-to-threshold (Holt or linear on the `p_now` + PERCLOS trajectory), (c) forecaster → GRU on forecast → `p_future`. Calibrate probabilities (Platt/isotonic) and tune thresholds on **training subjects only**.
-5. **Lead-time eval:** lead time, false alarms/hour, misses, and a lead-time vs false-alarm curve per signal. Run on ramps (primary) and the hard splice (negative control, expect ≈ 0 lead time).
-
-**User-side tasks, in parallel:**
-- **Start KSS self-recordings now**: long rested-to-tired sessions, raw webcam video + timestamps + KSS (1–9) every 5 min. They take calendar time. A small recording script (webcam → mp4 + timestamp CSV + KSS prompt) would help and could be the first thing built next session.
-- Order hardware when convenient.
-
-**Open decisions for the user:**
-- Is 60 s calibration OK for the demo, or should it be 30 s? GRU loses only 0.8 pp at 30 s.
-- Calibration-length curve figure → Phase 5 (data already in `results/phase2b_summary.csv`).
-
----
-
-## 4. How to resume (commands)
+## 3. How to resume (commands)
 
 ```bash
-# CPU env (.venv, Python 3.13): MediaPipe / feature extraction / dataset building
-./.venv/Scripts/python.exe -m src.features.build_dataset            # rebuild features/dataset_cal{30,60,120}.npz (~1 min)
+# CPU env (.venv, Python 3.13): MediaPipe / feature extraction / dataset building / eval
+./.venv/Scripts/python.exe -m src.features.build_dataset
+./.venv/Scripts/python.exe -m src.features.build_forecast_dataset 60
+./.venv/Scripts/python.exe -m src.eval.ramps
+./.venv/Scripts/python.exe -m src.eval.domain_shift <path/to/recording.mp4>
+./.venv/Scripts/python.exe -m src.realtime.live_loop --source 0 --show   # live camera, on-screen overlay, log-only serial
+./.venv/Scripts/python.exe -m src.eval.make_report_figures
 
 # GPU env (btp_lstm_gpu, Python 3.10, CUDA torch): all training
 PY="D:/Anaconda3/envs/btp_lstm_gpu/python.exe"
-$PY -m src.models.classifier_baseline                                # XGBoost, all calibration lengths (~seconds)
-$PY -m src.models.classifier_gru                                     # CV, 3 calib lengths x 3 seeds (~7 min)
-$PY -m src.models.classifier_gru --final 60                          # retrain deploy model
-PYTHONIOENCODING=utf-8 $PY -m src.models.stacking_ensemble           # ensembles + results/phase2b_summary.csv
+$PY -m src.models.classifier_gru --final 60      # retrain deploy model
+$PY -m src.models.forecaster                      # forecaster CV (not deployed, see REPORT.md)
+PYTHONIOENCODING=utf-8 $PY -u -m src.eval.lead_time   # full lead-time eval (slow, ~10 min)
 ```
 
-**Local-only (gitignored) artifacts that exist on this machine:** `features/dataset_cal*.npz`, `results/oof_*.npy`, `models/face_landmarker.task`, `data/raw/`. On a fresh clone, regenerate with `scripts/download_data.py` (needs `~/.kaggle/kaggle.json`), `scripts/download_model.py`, `src.features.extract_features` (~2 h CPU), `src.features.build_dataset`, then the classifier scripts.
+**Local-only (gitignored) artifacts on this machine:** `features/dataset_cal*.npz`, `features/forecast_cal*.npz`, `features/ramps_cal*.npz`, `features/webcam_demo.parquet`, `results/oof_*.npy`, `results/live_log_*.csv`, `models/face_landmarker.task`, `data/raw/`. Regenerate per the commands above / `scripts/download_data.py` + `scripts/download_model.py` + `src.features.extract_features` (~2h CPU) for a fresh clone.
 
 ---
 
-## 5. Gotchas learned (save time next session)
+## 4. Gotchas learned this session (add to the running list in the old checkpoint entries)
 
-- **MediaPipe VIDEO mode** needs strictly increasing timestamps per `FaceLandmarker` instance. `FaceDetector` owns the counter; don't pass timestamps in.
-- **Windows Task Manager shows ~0% GPU during CUDA training.** Its default graph is the 3D engine. Use `nvidia-smi`.
-- **Background job logs look empty.** Python stdout to a file is block-buffered, and `| grep` buffers too. Use `print(..., flush=True)` and avoid piping through grep (or use `grep --line-buffered`). The `±` sign makes grep treat output as binary on Windows; set `PYTHONIOENCODING=utf-8`.
-- **GPU-resident training** (whole dataset on the GPU, manual batching) is several times faster than DataLoader here: ~13 s/fold GRU, ~23 s/fold CNN.
-- **Median-shifted inputs are in raw units** (EAR ~0.05, pose ~5–8°). NNs need the per-channel `channel_scale`, which is stored in the checkpoint.
-- **Hard subjects:** 02 is near chance for every model; 09/15/60 show no EAR drop when "drowsy". This is label/physiology variability, not a bug. Report it as a limitation.
-- **User asks for progress on long jobs frequently.** Give short, concrete status (files done / N, current model), and make logs readable from the start.
+- `np.load(...)['key']` on an `NpzFile` **re-decompresses per access** — looping and indexing into the same key repeatedly (e.g. inside a generator) OOMs. Read each array out once (`{k: z[k] for k in z.files}`) before looping.
+- `torch.load` under PyTorch 2.6+ defaults to `weights_only=True` and will reject a checkpoint containing a numpy array (our `channel_scale`). Pass `weights_only=False` for our own trusted checkpoints.
+- A naive linear-trend-on-classifier-output signal is **not fixable by damping or smoothing alone** at this window/noise level — tried both, still unusable. Don't re-attempt without a fundamentally different estimator (e.g. Kalman/particle filter) if this comes up again.
+- Comparing feature distributions across domains (e.g. webcam vs. training) must use **calibrated** features, not raw ones — raw pooling across many training subjects mixes person-to-person variation into what's supposed to be a camera-only check.
+- When interpreting a real recording's model output against an "expected narrative," don't assume a simple single-hump timeline — ask the user what they actually did before concluding the model is wrong.
