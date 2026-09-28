@@ -1,6 +1,8 @@
 data/
 models/*.task
 features/dataset_cal*.npz
+features/forecast_cal*.npz
+features/ramps_cal*.npz
 results/oof_*.npy
 .claude/
 *.pyc

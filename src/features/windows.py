@@ -33,25 +33,28 @@ def apply_calibration(df: pd.DataFrame, cal: dict) -> pd.DataFrame:
     return df
 
 
-def iter_calibrated_videos(calib_s: float, fps: float = 10.0):
+def iter_calibrated_videos(calib_s: float, fps: float = 10.0, include_unpaired: bool = False):
     """Yields (subject, label_name, calibrated_df, ear_threshold) for every subject
-    with both videos. Calibration = first calib_s of the alert video; the alert
-    video's first CALIB_RESERVE_S are dropped for every calib_s so evaluation
-    windows are identical across calibration lengths."""
+    with both videos (include_unpaired=True also yields subject 42's alert-only video,
+    fine for the forecaster which needs no labels). Calibration = first calib_s of the
+    alert video; the alert video's first CALIB_RESERVE_S are dropped for every calib_s
+    so evaluation windows are identical across calibration lengths."""
     assert calib_s <= CALIB_RESERVE_S
     for nd_path in sorted(FEATURES_DIR.glob("*_non_drowsy.parquet")):
         subject = nd_path.stem.split("_")[0]
         dr_path = FEATURES_DIR / f"{subject}_drowsy.parquet"
-        if not dr_path.exists():  # subject 42: no drowsy video
+        if not dr_path.exists() and not include_unpaired:  # subject 42: no drowsy video
             continue
         nd = pd.read_parquet(nd_path)
         nd = nd[nd["valid"]].reset_index(drop=True)
-        dr = pd.read_parquet(dr_path)
-        dr = dr[dr["valid"]].reset_index(drop=True)
 
         cal = calibrate(nd.iloc[: int(calib_s * fps)])
         nd_eval = nd.iloc[int(CALIB_RESERVE_S * fps) :].reset_index(drop=True)
-        for label_name, df in (("non_drowsy", nd_eval), ("drowsy", dr)):
+        videos = [("non_drowsy", nd_eval)]
+        if dr_path.exists():
+            dr = pd.read_parquet(dr_path)
+            videos.append(("drowsy", dr[dr["valid"]].reset_index(drop=True)))
+        for label_name, df in videos:
             yield subject, label_name, apply_calibration(df, cal), cal["ear_threshold"]
 
 

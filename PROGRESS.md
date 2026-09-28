@@ -236,3 +236,78 @@ Video-level acc: GRU 0.825 / 0.859 / 0.845; best overall is the stacked ensemble
 - Cross-session preferences (GPU-first training, honest evaluation, progress visibility) saved to Claude's memory outside the repo.
 
 **Next session starts at:** `CHECKPOINT.md` §3, step 1 (forecaster dataset), optionally preceded by a KSS recording script so self-recordings can begin.
+
+## 2026-09-24 — Hardware shopping list
+
+- Added `hardware_list.md`: exact parts for the Arduino alert loop (Uno R3, common-cathode RGB LED, 3 V coin motor + 2N2222 + 1N4007 + 1 kΩ, 5 V active buzzer, 6×6 mm button, breadboard, jumpers), each with spec, search terms, look-alikes to avoid, and an on-arrival check.
+- Camera: the laptop's built-in webcam replaces the USB webcam (user decision). The domain-shift check (Phase 4) matters more now because a laptop camera sees the face from a low angle.
+- Next: user orders parts; hardware loop is still deferred until they arrive.
+
+## 2026-09-28 — Phase 3 step 1: forecaster dataset; KSS decision
+
+- **Decision (user):** skip long KSS self-recordings. Middle route: one 5–10 min normal webcam clip in Phase 4 (domain-shift check + demo), optional KSS ratings if tired. Report lead time as validated on synthetic ramps only.
+- `src/features/build_forecast_dataset.py` → `features/forecast_cal60.npz`: per-5 s aggregates (same 11 features as the classifier), 60 s median-shift calibration, 12,158 steps over 118 videos (48–216 steps each, 55% drowsy), no NaNs. Rows are grouped by `video_id`, ordered by `step`.
+- `iter_calibrated_videos(include_unpaired=True)` added. Subject 42's alert video is 60 s, shorter than the 120 s calibration reserve, so it contributes nothing (the "include 42" plan item is moot). Classifier datasets rebuilt: identical counts (11,214 windows).
+- Next: forecaster (12 steps in → 6–12 out) with persistence/linear-trend baselines.
+
+## 2026-09-28 — Phase 3 step 2: forecaster + baselines
+
+`src/models/forecaster.py` (GPU env): GRU encoder (hidden 64) → 12×11 offset from the input-window mean; 60 s in → 60 s out; smooth-L1, 30 epochs; subject-grouped 5-fold CV × 3 seeds; ~9k stride-1 samples; standardized per training fold. `results/phase3_forecaster.csv`. Model on all data: `python -m src.models.forecaster --final` → `models/forecaster.pt`.
+
+Error in training-std units (lower is better; MAE over all 11 features):
+| | 10 s | 30 s | 60 s |
+|---|---|---|---|
+| GRU | 0.445 | 0.475 | 0.485 |
+| mean of input window | 0.469 | 0.485 | 0.494 |
+| last value | 0.504 | 0.574 | 0.578 |
+| linear trend | 0.583 | 0.782 | 1.042 |
+
+Key features (MAE, GRU vs mean baseline): ear_mean 0.477/0.535/0.561 vs 0.504/0.532/0.555; perclos 0.539/0.603/0.608 vs 0.532/0.557/0.565.
+
+**Finding:** the forecaster beats the mean baseline by only ~5% at 10 s and ~2% at 60 s overall, and is *no better* on ear_mean / perclos at 30–60 s (worse on perclos). Linear trend extrapolation is worse than persistence at every horizon. Reason: videos are single-state, so the best predictor of the next minute is "what the last minute looked like"; there are no transitions to learn from. The forecaster cannot be expected to add lead time on real-data training alone; step 4 will test whether it adds anything on ramps.
+
+## 2026-09-29 — Phase 3 step 3: ramped transition builder
+
+`src/eval/ramps.py` → `features/ramps_cal60.npz` (`load_ramps()` yields subject, duration, shape, rep, onset_s, ear_threshold, frames). Per subject, from their own 60 s-calibrated per-frame data: 180 s alert lead-in → ramp of 2 / 5 / 10 min (linear or sigmoid) where each 5–10 s chunk is drowsy with probability p(t) rising 0→1 → 120 s drowsy tail. Hard splice = duration 0 (negative control). 3 random draws per config → 21 sequences × 59 subjects = 1,239 sequences, 204.7 h.
+- Onset = nominal time p(t)=0.5 (ramp midpoint; splice: 180 s), not the realized-fraction crossing, which is noisy with 5–10 s chunks.
+- Self-check (alert=0, drowsy=1 stand-ins, 200 draws): lead-in is exactly 0, tail exactly 1, mean fraction at midpoint 0.48 (linear) / 0.54 (sigmoid).
+- Chunks are drawn with replacement from a subject's own footage, so ramps of one subject share source frames; downstream evaluation must stay subject-grouped (train on other subjects, score this subject's ramps).
+
+## 2026-09-29 — Autonomous decisions rule adopted
+
+**User rule:** weigh alternatives independently, choose, implement, test, keep going — ask only for information only the user has. Saved to Claude memory (`feedback_autonomous_decisions.md`) for future sessions.
+
+## 2026-09-29 — Phase 3 step 4-5: risk fusion, lead-time evaluation (DONE)
+
+`src/eval/lead_time.py` (GPU env). Per subject-grouped fold (same folds as the classifier): retrains the GRU classifier, the forecaster, and a new **step-GRU** (a GRU classifier reading 9x5s aggregate blocks = 45s, the only architecture that can score a forecast output). Streams every held-out subject's real alert video and their ramps through 5s decisions, Platt-calibrates each classifier's raw output using *other* folds' OOF predictions, computes:
+- `reactive` = calibrated p_now (raw-frame GRU, 45s window)
+- `trend` = damped/smoothed trend on p_now (see below)
+- `fc30`/`fc60` = forecaster's 30s/60s-ahead prediction -> step-GRU
+- `step_now` = step-GRU on the last 45s of blocks, no forecast (control, isolates whether *forecasting* adds anything beyond the step-GRU architecture itself)
+- `fused_mean`/`fused_max`/`fused_rf` = combinations
+
+Alarm = signal >= threshold on 2 consecutive decisions, 60s refractory. Threshold per (signal, budget) chosen from *other* folds' real alert videos only; lead time and hit rate scored on held-out ramps. `results/phase3_leadtime.csv` (operating points at 1/3/6 FA/h), `results/phase3_curve.csv` (full threshold sweep).
+
+**Bug fixed:** `load_ramps()` re-decompressed the 61MB `frames` array from the npz on every single yielded item (NpzFile lazy-decompresses per key-access) — 1,239x redundant decompression, OOM'd at ~150MB/access. Fixed by reading each array out of the NpzFile once before the loop.
+
+**Finding — naive linear trend-on-p_now is unusable, root-caused and fixed twice, still unusable:**
+1. First version (OLS slope over 12 raw p_now values, extrapolated 87.5s ahead) never dropped below 8.27 FA/h at *any* threshold up to 0.995 — it saturates at ~1 constantly. Root cause: p_now is already a noisy classifier output; extrapolating a slope fit to 12 noisy points 17.5 steps ahead amplifies that noise past the [0,1] clip bound routinely.
+2. Applied Holt-style geometric damping (phi=0.9) instead of a flat 12-step jump: floor dropped to 5.58 FA/h, still unusable.
+3. Applied EWMA smoothing (alpha=0.3) to p_now *before* fitting the slope (fixing the actual root cause — noisy input, not just the extrapolation multiplier): floor dropped to 4.5 FA/h. Still can't hit even a 6/h budget reliably.
+**Conclusion:** a slope-based "is p_now rising" signal is structurally unreliable at this window/noise level, independent of damping or smoothing — p_now swings enough on true non-drowsy footage that its derivative is mostly noise. Not deployed. `fused_max`/plain `fused_mean` inherit this instability; kept in the CSV as a documented negative result, not recommended.
+
+**Results at practical operating points (median lead time in s, +=before onset; hit rate; ramp duration = time from 0% to 100% drowsy):**
+| Signal | Budget (FA/h) | actual FA/h | hit@120s | lead@120s | hit@300s | lead@300s | hit@600s | lead@600s |
+|---|---|---|---|---|---|---|---|---|
+| reactive | 3 | 4.14 | 0.58 | -45 | 0.58 | -35 | 0.62 | -10 |
+| fc30 (forecaster) | 3 | 3.42 | 0.69 | -25 | 0.76 | -7.5 | 0.79 | **+45** |
+| step_now (control) | 3 | 3.60 | 0.78 | -35 | 0.82 | -5 | 0.86 | **+50** |
+| fused_rf (reactive+fc30, recommended) | 3 | 3.24 | 0.70 | -30 | 0.75 | -10 | 0.78 | +35 |
+
+**Negative control confirmed:** the hard splice (dur=0, no precursor) shows negative median lead for every signal (-20 to -50s) — no signal hallucinates advance warning where there is none, as expected.
+
+**Headline finding:** no signal gives positive lead time on fast transitions (2 min ramps: all median leads negative — the transition is faster than any window-based method can anticipate). On slow transitions (10 min ramps, plausible for real drowsiness onset), several signals give ~35-50s of genuine lead time at a 3 FA/h budget, with step_now (the aggregate classifier alone, no forecast) matching or beating the forecaster-based signals. **The forecaster does not clearly add value over just running a classifier on 5s aggregates reactively** — same conclusion as step 2 (forecaster ~ mean baseline), now confirmed at the level that matters (lead time), not just forecast MAE.
+
+**Recommendation for the report/demo:** deploy `reactive` (fine-grained, lowest latency) for the primary alert, optionally blended with `fc30` (`fused_rf`) for a small lead-time gain on slow onsets — both calibrated per the CSV. Do not deploy `trend` or a forecaster-only signal; the step-GRU-on-aggregates result suggests any future work should look at longer classifier context windows before building a heavier forecaster.
+
+**Open issues / next steps:** Phase 3 is functionally complete (dataset, forecaster, ramps, fusion, lead-time eval all done and honestly reported). Remaining before Phase 4: pick final deploy signal (recommend `reactive` alone, given `fused_rf`'s modest gain vs added complexity — GRU forecaster + step-GRU in the loop). Phase 4 (real-time loop, webcam domain check, one 5-10 min recording) is next.
