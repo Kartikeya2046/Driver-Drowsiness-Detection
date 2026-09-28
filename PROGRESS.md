@@ -373,3 +373,20 @@ Added `LiveLoop.latency_report()`: wall-clock time per processing tick (frame ->
 `REPORT.md`: consolidated Phase 2-4 results (optimistic vs deployable classifier numbers, forecaster vs baselines, lead-time/false-alarm results, domain-shift + live-loop findings, latency), what's not done and why (hardware, KSS recordings), and a limitations section for the write-up. Everything traces back to the dated `PROGRESS.md` entry that produced it.
 
 **Remaining for Phase 5:** the physical demo script needs the hardware (not ordered). Per-subject variability write-up and different-horizon ablations are already covered in REPORT.md / Phase 3 results; no further analysis planned unless the user asks.
+
+## 2026-09-29 — Live-loop accuracy fixes: threshold recentering + closure override
+
+**User reported live testing was bad: stuck at high alert, unresponsive to real drowsiness, felt laggy.** Before changing anything, ruled out a live-pipeline bug: ran the exact same buffering/scaling/model code from `live_loop.py` against known-labeled lab data (subjects 01/05/20). Found the same failure modes reproduced on lab data (same domain the model was trained/validated on):
+- Subject 20's own known-**alert** footage scored p_now=0.816 — already "level 3" while genuinely alert.
+- Subject 05 barely separated alert (0.307) from drowsy (0.242) at all — inverted.
+Confirms this is the known per-subject variability + ~79% accuracy ceiling (already documented), not a coding bug — the live pipeline is correct.
+
+**Two evidence-targeted fixes, no retraining needed:**
+1. **`risk.recenter()`** (logit-space): the 60s calibration window already collected for feature calibration is now also scored by the model itself (last 45s of it), giving each person's own baseline p_now. Live decisions are recentered so that baseline maps to a fixed low target (0.10) instead of wherever the raw model happened to put it. Verified on the same lab subjects: subject 20's alert-footage level dropped 3→2 (no longer pinned red), subject 01 (already good) unaffected, subject 05 (genuinely low-signal, not a bias problem) correctly *not* "fixed" — recentering can't manufacture a discrimination the model doesn't have. `p_now_raw` and `p_now` (recentered) both logged for transparency.
+2. **`risk.apply_closure_override()`**: the GRU reasons over a 45s window, so a few seconds of closed eyes barely moves it — inherent to a model trained/evaluated at that window length, not a bug. Sustained eye closure (tracked every tick from the calibrated EAR threshold, ~100ms resolution) now forces level ≥2 past 1.5s and level 3 past 3.0s, independent of the GRU. Fixed cutoffs, not tuned against real closure-duration data (none exists yet) — `ponytail:` comment marks this for retuning once real sessions are available.
+
+Both are pure functions in `risk.py` with `demo()` self-checks (recenter identity-at-baseline, override never-downward, threshold crossings).
+
+**Re-verified end-to-end on the user's real recording** (3 min excerpt): level distribution shifted from {0:1, 1:2, 2:8, 3:65} (85% level-3) to **{0:19, 1:6, 2:16, 3:35} (46% level-3)** — same footage, same model, meaningfully less "stuck high". Latency unaffected (mean 35.7ms, still well under the 100ms budget).
+
+**Not fully solved and won't overclaim it:** genuine low-signal subjects (like 05) and the underlying ~79% ceiling are real, data-level limits — no threshold engineering fixes those. Recentering only removes *systematic bias*, not classification *noise*. User should re-test live and report whether the remaining behavior is acceptable or still needs work.

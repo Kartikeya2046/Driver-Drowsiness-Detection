@@ -20,7 +20,7 @@ import torch
 from src.features.webcam import LiveFeatureExtractor
 from src.features.windows import NORM_COLS, calibrate
 from src.models.classifier_gru import DrowsinessGRU
-from src.realtime.risk import risk_level
+from src.realtime.risk import apply_closure_override, recenter, risk_level
 from src.realtime.serial_client import SerialClient
 
 ROOT = Path(__file__).resolve().parent.parent.parent
@@ -104,7 +104,17 @@ class LiveLoop:
         self._tick = tick
         self._last_valid, self._gap = last_valid, gap
         cal = calibrate(pd.DataFrame(buffer))
-        print("Calibration done.", flush=True)
+
+        # This person's own baseline model output (risk.recenter() target) - see risk.py
+        # docstring: raw p_now varies a lot by person even on known-alert footage.
+        window_n = int(WINDOW_S * FPS)
+        base_rows = buffer[-window_n:] if len(buffer) >= window_n else buffer
+        seq = np.array([[r[c] - cal["median"][c] for c in NORM_COLS] for r in base_rows], dtype=np.float32)
+        with torch.no_grad():
+            x = (seq / self.scale).astype(np.float32)[None]
+            cal["baseline_p"] = torch.sigmoid(self.model(torch.from_numpy(x))).item()
+
+        print(f"Calibration done. (baseline p_now={cal['baseline_p']:.3f})", flush=True)
         return cal
 
     def run(self, max_s: float | None = None, show: bool = False):
@@ -114,6 +124,7 @@ class LiveLoop:
         last_valid, gap, tick = self._last_valid, self._gap, self._tick
         level, last_decision_t, last_serial_t = 0, -DECISION_INTERVAL_S, 0.0
         p_now_display, ear_display = None, 0.0
+        closed_ticks = 0  # consecutive ticks with eyes below the calibrated blink threshold
         self.tick_latency_s: list[float] = []  # frame -> features -> (risk level if decided), per tick
 
         while True:
@@ -128,9 +139,11 @@ class LiveLoop:
             if row is not None:
                 last_valid, gap = row, 0
                 ear_display = row["ear"]
+                closed_ticks = closed_ticks + 1 if ear_display < cal["ear_threshold"] + cal["median"]["ear"] else 0
                 buf.append(np.array([row[c] - cal["median"][c] for c in NORM_COLS], dtype=np.float32))
             else:
                 gap += 1
+                closed_ticks = 0
                 if gap > max_gap_frames:
                     buf.clear()  # lost the face for too long; don't alert on stale data
 
@@ -138,10 +151,13 @@ class LiveLoop:
             if ready and t - last_decision_t >= DECISION_INTERVAL_S:
                 x = (np.stack(buf) / self.scale).astype(np.float32)[None]
                 with torch.no_grad():
-                    p_now_display = torch.sigmoid(self.model(torch.from_numpy(x))).item()
+                    p_now_raw = torch.sigmoid(self.model(torch.from_numpy(x))).item()
+                p_now_display = recenter(p_now_raw, cal["baseline_p"])
                 level = risk_level(p_now_display)
                 last_decision_t = t
-                self.log_rows.append({"t": t, "p_now": p_now_display, "level": level})
+                self.log_rows.append({"t": t, "p_now_raw": p_now_raw, "p_now": p_now_display, "level": level})
+
+            level = apply_closure_override(level, closed_ticks / FPS)
 
             if t - last_serial_t >= 1.0 / SERIAL_HZ:
                 self.serial.send_level(level if ready else 0)
