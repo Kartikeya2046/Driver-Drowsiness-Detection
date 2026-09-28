@@ -390,3 +390,15 @@ Both are pure functions in `risk.py` with `demo()` self-checks (recenter identit
 **Re-verified end-to-end on the user's real recording** (3 min excerpt): level distribution shifted from {0:1, 1:2, 2:8, 3:65} (85% level-3) to **{0:19, 1:6, 2:16, 3:35} (46% level-3)** — same footage, same model, meaningfully less "stuck high". Latency unaffected (mean 35.7ms, still well under the 100ms budget).
 
 **Not fully solved and won't overclaim it:** genuine low-signal subjects (like 05) and the underlying ~79% ceiling are real, data-level limits — no threshold engineering fixes those. Recentering only removes *systematic bias*, not classification *noise*. User should re-test live and report whether the remaining behavior is acceptable or still needs work.
+
+## 2026-09-29 — Session close: live testing confirmed the fix works, good enough for tonight
+
+**User tested the recentered + closure-override live loop live on their own webcam and confirmed it's "way better than before."** Stopping here for the night — this is a working checkpoint, not a finished-tuning point.
+
+**Flagged for future fine-tuning (not done tonight, revisit when picking this back up):**
+- `risk.TARGET_BASELINE` (0.10) and the closure-override cutoffs (`MICROSLEEP_S`=1.5, `LONG_CLOSURE_S`=3.0) are reasonable starting points, not tuned against real usage data — there isn't any yet. Once there are a few more live sessions (ideally logged via `results/live_log_*.csv`), revisit these against real false-alarm/miss behavior rather than gut-feel defaults.
+- Recentering fixes *systematic bias* only. It does not and cannot fix genuine low-signal cases (documented: subject 05-style subjects show no real separation in the underlying model, not a threshold problem) — more real user sessions would help judge how much this matters day to day, distinct from more threshold tuning.
+- The risk-level thresholds in `risk.LEVELS` (0.3/0.5/0.75) themselves were never tuned against `results/phase3_curve.csv`'s false-alarm data — worth doing once there's a reason to pick a specific number (e.g. before the hardware demo, so vibration/buzzer trigger rates feel right in person).
+- Domain-shift and live-loop validation are both still n=1 (one person, one setup) — more sessions (different lighting, maybe a second person) would turn "looks promising" into an actual validated claim.
+
+**Everything up to and including tonight's fixes is committed** (`7604361` accuracy fixes, `8d9b713` STARTUP.md + hardware_list.md). Next session: resume via `CHECKPOINT.md`; consider starting the Arduino sketch (fully decoupled, can be written/tested independently of the ML side) while hardware is still on order, or start on the threshold fine-tuning above.
