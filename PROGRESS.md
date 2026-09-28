@@ -311,3 +311,58 @@ Alarm = signal >= threshold on 2 consecutive decisions, 60s refractory. Threshol
 **Recommendation for the report/demo:** deploy `reactive` (fine-grained, lowest latency) for the primary alert, optionally blended with `fc30` (`fused_rf`) for a small lead-time gain on slow onsets — both calibrated per the CSV. Do not deploy `trend` or a forecaster-only signal; the step-GRU-on-aggregates result suggests any future work should look at longer classifier context windows before building a heavier forecaster.
 
 **Open issues / next steps:** Phase 3 is functionally complete (dataset, forecaster, ramps, fusion, lead-time eval all done and honestly reported). Remaining before Phase 4: pick final deploy signal (recommend `reactive` alone, given `fused_rf`'s modest gain vs added complexity — GRU forecaster + step-GRU in the loop). Phase 4 (real-time loop, webcam domain check, one 5-10 min recording) is next.
+
+## 2026-09-29 — Phase 4 step 1: face-crop webcam pipeline + domain-shift check
+
+**User recorded** a 12.3 min full-frame webcam clip (1920x1080, 29.7 fps), acting out alert -> drowsy -> alert: `C:\Users\HP VICTUS\Pictures\Camera Roll\WIN_20260929_00_39_13_Pro.mp4` (not in the repo, personal footage).
+
+- `src/features/webcam.py`: `process_webcam_video()` — nearest-frame subsample to 10 fps, then per frame: crop to the face's bounding box (landmarks + 40% margin, squared) and resize to 224x224 before running the same `frame_features()` training uses. **Two separate `FaceDetector` instances, not one, and this is deliberate**: the bbox pass is IMAGE mode (each frame's box is unrelated to the last, so no reason to feed it to a temporal tracker); the crop pass is VIDEO mode (consecutive 224x224 crops *are* a smooth video, same framing convention as training data, so VIDEO mode's tracking is valid there, matching how `extract_features.py` runs on training clips). Mixing both passes into one VIDEO-mode instance would have fed it alternating raw-frame/crop images and broken its continuity assumption.
+- `src/eval/domain_shift.py`: runs the above, saves `features/webcam_demo.parquet` (gitignored, personal footage-derived), compares against training. **0% face-drop rate** over the whole 12.3 min clip.
+- **Methodology self-correction:** first pass compared *raw* features pooled across all 59 training subjects against the webcam session — flawed, since pooling raw values across different people mixes genuine person-to-person variation into what's supposed to be a camera/framing check, swamping any real signal (e.g. raw EAR looked wildly different, but that's just this person's resting eye shape). Redid the comparison on **calibrated** features (median-shifted from each session's own first 60 s, calib_s=60, reusing `iter_calibrated_videos`) — the same feature space the classifier actually trains and infers on, and the only fair apples-to-apples comparison.
+
+**Calibrated comparison (webcam session vs. all training videos' calibrated features):**
+| Feature | webcam std | train std | ratio |
+|---|---|---|---|
+| ear | 0.046 | 0.048 | 95% — matches well |
+| mar | 0.005 | 0.047 | 11% — far narrower |
+| pitch | 4.64 | 7.26 | 64% |
+| yaw | 4.54 | 7.94 | 57% |
+| roll | 6.00 | 5.51 | 109% |
+
+**Finding:** EAR — the dominant drowsiness signal per the earlier per-subject investigation — transfers well after calibration; the webcam pipeline is trustworthy for the feature that matters most. MAR and head pitch/yaw show noticeably less variation in this session than in training, consistent with a lower-angle laptop camera and/or one person's own range of motion during a single scripted demo rather than 59 different people's natural behavior. **Caveat: n=1 person, n=1 session** — this is a spot-check, not a validated general claim; report it as a limitation, not a conclusion.
+
+**Not committed yet.** Next: pick the reactive signal's deploy path (Phase 3 recommendation), then wire the calibration -> loop -> serial protocol for the live system, using this same `webcam.py` preprocessing.
+
+## 2026-09-29 — Phase 4 step 2: live loop built and run end-to-end on real footage
+
+- `src/realtime/risk.py`: p_now -> alert level 0-3 (thresholds 0.3/0.5/0.75, a starting point for the demo, not yet tuned against `phase3_curve.csv`). `demo()` self-check.
+- `src/realtime/serial_client.py`: wraps pyserial; with no port (hardware not ordered yet) or pyserial/port unavailable, logs `[serial] R:<level>` instead of raising — the software loop is fully runnable and testable without the Arduino attached. `demo()` self-check.
+- `src/realtime/live_loop.py`: calibrate (first `calib_s`, from the checkpoint) -> forward-fill short face-loss gaps (<0.5s, matches training's interpolation cutoff; longer gaps clear the window rather than alert on stale data) -> 45s window -> deploy GRU -> `risk_level()` -> serial at ~2Hz, `ACK` polling, CSV log of every decision (`results/live_log_<ts>.csv`, gitignored). Works against a live webcam (`--source 0`) or a video file (`--source path`), same code path — reuses `src.features.webcam.LiveFeatureExtractor` (refactored `process_webcam_video` to use it too, one implementation of frame->feature instead of two).
+- **Bug fixed:** `torch.load` on `models/classifier_gru.pt` failed under PyTorch 2.6+'s new `weights_only=True` default (the checkpoint's `channel_scale` is a numpy array). Fixed with `weights_only=False` — it's our own checkpoint, not an untrusted download.
+- **Ran end-to-end against the user's real recording** (12.3 min, acted alert->drowsy->alert): 60s calibration, then 633 decisions over ~11.5 min, no crashes, serial/CSV logging worked. Level distribution: 0:77, 1:78, 2:59, **3:419 (66%)**.
+
+**Finding — the model's output does not clearly track the intended narrative on this clip.** Aligning p_now against raw EAR/pitch over time: p_now is high (0.85-0.99, i.e. "drowsy") through most of the first ~7 minutes, dips low (0.13-0.46, i.e. "alert") for a stretch around t=550-705s, then jumps back to 0.998 in the final 30s. Raw EAR barely moves the whole session (0.27-0.35), consistent with the domain-shift check's earlier flag (webcam pitch/yaw variance is narrower than training's) — there may simply not be enough signal in this one take for the classifier to key on, or the model's 78.8% cross-validated accuracy just doesn't hold up on an unseen real-world subject/camera. **Not chasing this by retuning thresholds until it "looks right"** — that would be fitting the demo, not evaluating it. Logged honestly; loop mechanics (calibration, buffering, inference, risk mapping, serial, logging) are verified working, the model's real-world accuracy on this clip is not.
+
+**Open question for the user:** what was the actual timeline of the acting (roughly when did alert / drowsy / alert start, in clip time)? Needed to know whether p_now's dip-then-rise pattern is inverted relative to what was intended, or whether the "acting" happened at different times than assumed.
+
+**Not committed yet.**
+
+## 2026-09-29 — Correction: live-loop finding was based on a wrong assumption
+
+**User confirmed the p_now trace is fairly correct**, not inverted. My previous entry assumed a single alert(start)->drowsy(middle)->alert(end) hump; the user's actual acting had a more layered timeline (drowsy for most of the first ~7 min of decisions, a genuine alert recovery ~9-12 min, drowsy again in the final 30s) that matches what the model produced. **Retracting the "doesn't track the narrative" concern** — on this one clip, the reactive GRU signal does track the acted state reasonably well end-to-end (webcam capture -> face-crop -> calibration -> GRU -> risk level), which is a positive result for the live loop, not a negative one. Domain-shift caveats (narrower MAR/pitch/yaw variance than training, n=1 session) still stand as limitations to mention in the report, but are not contradicted by this result.
+
+## 2026-09-29 — Design decision: live loop stays reactive-only, no forecaster
+
+Evaluated wiring the forecaster + step-GRU into `live_loop.py` for `p_future` (plan's D2 checklist item) against keeping it reactive-only (current state). Per Phase 3's own lead-time evaluation: `fc30` (forecaster) beat `reactive` by only ~35-50s of lead time, only on slow (10 min) transitions, and `step_now` (a classifier on aggregates, no forecast at all) matched or beat it. Wiring the forecaster in doubles the models running in the loop (forecaster GRU + a persisted step-GRU classifier, neither of which currently has a `--final` deploy checkpoint saved) for a gain that's modest and concentrated in a transition speed real driving may or may not produce. **Decision: keep the deployed loop reactive-only** (simpler, lower latency, matches the Phase 3 recommendation). The forecaster stays available as a Phase 5 ablation/comparison result, not a deployed component. Revisit only if the user wants that extra lead time enough to justify the added complexity and latency.
+
+## 2026-09-29 — Phase 4 step 3: latency/FPS measurement
+
+Added `LiveLoop.latency_report()`: wall-clock time per processing tick (frame -> face-crop -> landmark -> feature -> decision-if-due -> serial write), i.e. frame-to-serial-write latency; the actuator's own response after that (Arduino digitalWrite/PWM) is untestable without the hardware attached (not ordered yet), but is expected to be sub-millisecond and not the bottleneck.
+
+3-minute benchmark (CPU env, 1,201 ticks @ 10 fps target): **mean 37.7ms, p95 52.4ms, max 68.7ms**, against a 100ms/tick budget (10 fps) — **0% of ticks over budget**. Sustainable throughput ≈ 26 fps, well above the 10 fps target, so the CPU pipeline is not a bottleneck for a live camera feed either. `--max-s` flag added to `live_loop.py` for short benchmark runs without processing a whole recording.
+
+## 2026-09-29 — Phase 4 step 4: live overlay dashboard
+
+`draw_overlay()` + `--show` in `live_loop.py`: on-frame EAR, PERCLOS (over the current 45s window), p_now, and alert level, with a color-coded border (green/yellow/orange/red matching the risk levels). Chosen over a separate Streamlit app: no new process/dependency, fits directly in the loop already running, and a physical demo (laptop + screen) doesn't need a browser. Sanity-checked `draw_overlay()` directly on a dummy frame (this environment has no display to open a real cv2 window) — **user should try `--source 0 --show` on their own machine** to see the live window.
+
+**Phase 4 is now functionally complete**: face-crop webcam pipeline, domain-shift check, live loop (calibration -> GRU -> risk -> serial, works with or without hardware attached), latency/FPS measurement (well within budget), on-frame dashboard. Not yet possible: true actuator latency and the physical demo script (hardware not ordered/arrived).

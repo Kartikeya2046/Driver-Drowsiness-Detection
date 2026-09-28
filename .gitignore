@@ -3,6 +3,9 @@ models/*.task
 features/dataset_cal*.npz
 features/forecast_cal*.npz
 features/ramps_cal*.npz
+features/webcam_demo.parquet
+results/live_log_*.csv
+results/*.log
 results/oof_*.npy
 .claude/
 *.pyc
